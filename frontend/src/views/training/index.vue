@@ -18,6 +18,16 @@
       </article>
     </div>
 
+    <p class="roster-line">
+      可开班名单（按统一口径自动核对，无需人工比对）：
+      <template v-if="roster.length">
+        <span v-for="item in roster" :key="String(item.id)" class="roster-tag">
+          {{ item['培训编号'] }} · {{ item['培训主题'] }}
+        </span>
+      </template>
+      <span v-else>暂无满足开班条件的培训计划</span>
+    </p>
+
     <form class="filter-bar" @submit.prevent="reload">
       <label v-for="field in filterFields" :key="field" class="filter-item">
         <span>{{ field }}</span>
@@ -68,12 +78,22 @@ import { onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type StatItem = { label: string; value: number | string }
+type RosterItem = Record<string, string | number | null>
 
 const ENDPOINT = '/api/training'
 const columns = ["培训编号", "培训主题", "培训对象", "培训方式", "计划课时", "考核成绩", "培训日期", "培训状态"]
 const actions = ["确认开班", "登记结业", "取消培训"]
 const statuses = ["待开班", "培训中", "已结业", "已取消"]
-const stats = [{"label": "待开班培训", "value": 0}, {"label": "培训中课程", "value": 0}, {"label": "平均考核成绩", "value": 0}]
+
+// 统计卡片与开班名单都由后端同一份口径算出，前端只展示不自己算，
+// 本地演示环境与正式环境看到的才是同一份结果。
+const stats = ref<StatItem[]>([
+  { label: '待开班培训', value: '—' },
+  { label: '培训中课程', value: '—' },
+  { label: '平均考核成绩', value: '—' },
+])
+const roster = ref<RosterItem[]>([])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
@@ -99,14 +119,33 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('培训考核动作未生效，请稍后重试')
+    const payload = await response.json()
+    if (!response.ok || !payload.ok) {
+      // 后端会说明是哪一步校验不通过，直接把原因亮出来
+      throw new Error(payload.message ?? payload.detail ?? '培训考核动作未生效，请稍后重试')
     }
-    await reload()
+    await Promise.all([reload(), loadSummary()])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '培训考核操作失败'
+  }
+}
+
+async function loadSummary() {
+  try {
+    const response = await request(`${ENDPOINT}/summary`)
+    if (!response.ok) {
+      throw new Error('培训考核统计读取失败')
+    }
+    const payload = await response.json()
+    stats.value = (payload.stats ?? []).map((item: { label: string; value: number | null }) => ({
+      label: item.label,
+      value: item.value ?? '—',
+    }))
+    roster.value = payload['开班名单'] ?? []
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '培训考核统计读取失败'
   }
 }
 
@@ -126,5 +165,8 @@ async function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  void reload()
+  void loadSummary()
+})
 </script>
