@@ -1,4 +1,9 @@
-"""培训考核接口：维护培训计划，覆盖确认开班、登记结业、取消培训等动作。"""
+"""培训考核接口：维护培训计划，覆盖确认开班、登记结业、取消培训等动作。
+
+平均成绩、开班条件、开班名单、结业判定统一走 services.training_standard 的口径。
+注意：/summary、/standard、/export 必须注册在 /{entry_id} 之前，
+否则会被详情路由截获，返回 422 而不是预期数据。
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,14 +11,34 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 
 from app.schemas import ActionResult, EntryPayload, PageResult
+from app.services import training_standard as standard
 from app.services.training import TrainingService
 
 router = APIRouter(prefix="/api/training", tags=["培训考核"])
 
 service = TrainingService()
 
-LIST_FIELDS = ["培训编号", "培训主题", "培训对象", "培训方式", "计划课时", "考核成绩", "培训日期", "培训状态"]
+LIST_FIELDS = ["培训编号", "培训主题", "培训对象", "培训方式", "计划课时", "考核成绩", "培训日期", "培训状态", "开班名单", "结业结果"]
 STATUSES = ["待开班", "培训中", "已结业", "已取消"]
+
+
+@router.get("/summary")
+def summary() -> dict[str, Any]:
+    """成绩列表的汇总口径：平均考核成绩只在这里算一份，前端直接展示不重算。"""
+    return service.summary()
+
+
+@router.get("/standard")
+def standard_info() -> dict[str, Any]:
+    """当前生效的培训考核口径：部署新口径后，两个环境各自打开这里比对即可。"""
+    return standard.standard_description()
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出培训考核清单：返回当前过滤条件下的全量数据，与列表走同一份口径。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "training", "total": total, "口径版本": standard.STANDARD_VERSION, "items": items}
 
 
 @router.get("", response_model=PageResult[dict])
@@ -50,16 +75,13 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 
 @router.post("/{entry_id}/actions", response_model=ActionResult)
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条培训计划执行确认开班、登记结业、取消培训；不允许的动作会被拦下并说明原因。"""
+    """对单条培训计划执行确认开班、登记结业、取消培训。
+
+    每个动作都先过统一口径的逐步检查：不通过时 ok=false 且 checks 里
+    标出具体是哪一步、什么原因，流程不会改了一半数据才报错。
+    """
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message, checks = service.run_action(entry_id, action, payload.values)
     if entry is None:
-        return ActionResult(ok=False, message=message)
-    return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出培训考核清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "training", "total": total, "items": items}
+        return ActionResult(ok=False, message=message, checks=checks)
+    return ActionResult(ok=True, message=message, entry=entry, checks=checks)

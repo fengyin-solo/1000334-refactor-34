@@ -19,6 +19,8 @@ class ActionResult(BaseModel):
     ok: bool
     message: str
     entry: dict[str, Any] | None = None
+    # 逐步口径检查结果：流程失败时能看出是哪一步不通过
+    checks: list[dict[str, Any]] | None = None
 
 
 class EntryPayload(BaseModel):
